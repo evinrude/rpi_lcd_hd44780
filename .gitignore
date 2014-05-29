@@ -1,0 +1,8 @@
+.tmp_versions
+Module.symvers
+lcd_clock
+*.mod*
+*.o
+*.ko
+*.cmd
+modules.order
