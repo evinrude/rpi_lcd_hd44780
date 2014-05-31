@@ -9,6 +9,7 @@
 #include <linux/semaphore.h>
 
 /** convenience macros **/
+#define MAXBUF 83
 #define NUM_PORTS 14
 #define GPFSEL0_OFFSET 0x00000000
 #define GPFSEL1_OFFSET 0x00000004
@@ -28,6 +29,7 @@
 #define DB5 17
 #define DB6 27
 #define DB7 22
+#define DDRAM_SET 0x80
 
 #define IOREAD32(OFFSET) ((unsigned long) ioread32((void *)(GPIO_BASE + OFFSET)))
 #define IOADDRESS32(OFFSET) ((void *)(GPIO_BASE + OFFSET))
@@ -36,7 +38,9 @@
 
 /** prototypes **/
 static ssize_t fops_lcdclear(struct inode *inodep, struct file *filep);
-static int fops_lcdwrite(struct file *filep, const char __user *buff, size_t len, loff_t *off);
+static ssize_t fops_lcdwritemessage(struct file *filep, const char __user *buff, size_t len, loff_t *off);
+static ssize_t fops_lcdwritechar(struct file *filep, const char __user *buff, size_t len, loff_t *off);
+static ssize_t fops_lcdwritecmd(struct file *filep, const char __user *buff, size_t len, loff_t *off);
 void _toggle_en(void);
 void _write_nibble(unsigned char nibble);
 void _lcd_write(unsigned char c, int is_command);
@@ -51,21 +55,25 @@ static unsigned long GPIO_BASE = 0;
 static struct dentry *root_entry;
 
 /** globals **/
-#ifdef lcd_20x4
-static char lcdbuffer[83];
-#else
-static char lcdbuffer[33];
-#endif
+static char lcdbuffer[MAXBUF];
 static u32 clear_before_write_message = 0;
 static u8 newline_seperator = '+';
 struct semaphore sem;
-struct file_operations lcdwrite_fops = {
+struct file_operations lcdwritemessage_fops = {
 	.owner = THIS_MODULE,
-	.write = fops_lcdwrite,
+	.write = fops_lcdwritemessage,
 };
 struct file_operations lcdclear_fops = {
 	.owner = THIS_MODULE,
 	.open = fops_lcdclear,
+};
+struct file_operations lcdwritechar_fops = {
+	.owner = THIS_MODULE,
+	.write = fops_lcdwritechar,
+};
+struct file_operations lcdwritecmd_fops = {
+	.owner = THIS_MODULE,
+	.write = fops_lcdwritecmd,
 };
 
 static int fops_lcdclear(struct inode *inodep, struct file *filep)
@@ -74,24 +82,16 @@ static int fops_lcdclear(struct inode *inodep, struct file *filep)
 	return 0;
 }
 
-static ssize_t fops_lcdwrite(struct file *filp, const char __user *buff, size_t len, loff_t *off)
+static ssize_t fops_lcdwritemessage(struct file *filp, const char __user *buff, size_t len, loff_t *off)
 {
-	if(len > 33)
+	if(len > MAXBUF)
 	{
-#ifdef lcd_20x4
-		continue
-#else
-		printk(KERN_ERR "Unsupported buffer size\n");
+		printk(KERN_ERR "Unsupported string size [%d]. Must be less than [%d]\n", len, MAXBUF);
 		return -EIO;
-#endif
 	}
 
 	//grab the data from userspace
-#ifdef lcd_20x4
-	memset(&lcdbuffer, 0, 83);
-#else
-	memset(&lcdbuffer, 0, 33);
-#endif
+	memset(&lcdbuffer, 0, MAXBUF);
 	if(copy_from_user(&lcdbuffer, buff, len))
 	{
 		printk(KERN_ERR "copy_from_user failed\n");
@@ -100,6 +100,32 @@ static ssize_t fops_lcdwrite(struct file *filp, const char __user *buff, size_t 
 
 	//leave a message
 	lcd_write_message(lcdbuffer);
+	return len;
+}
+
+static ssize_t fops_lcdwritechar(struct file *filep, const char __user *buff, size_t len, loff_t *off)
+{
+	memset(&lcdbuffer, 0, 1);
+	if(copy_from_user(&lcdbuffer, buff, len))
+	{
+		printk(KERN_ERR "copy_from_user failed\n");
+		return -EIO;
+	}
+
+	_lcd_write(lcdbuffer[0], 0);
+	return len;
+}
+
+static ssize_t fops_lcdwritecmd(struct file *filep, const char __user *buff, size_t len, loff_t *off)
+{
+	memset(&lcdbuffer, 0, 1);
+	if(copy_from_user(&lcdbuffer, buff, len))
+	{
+		printk(KERN_ERR "copy_from_user failed\n");
+		return -EIO;
+	}
+
+	_lcd_write(lcdbuffer[0], 1);
 	return len;
 }
 
@@ -150,7 +176,8 @@ EXPORT_SYMBOL(lcd_clear);
 
 void lcd_write_message(char *message)
 {
-	int i = 0;	
+	int i = 0;
+	int lines = 0;	
 	
 	//grab
 	down(&sem);
@@ -160,12 +187,36 @@ void lcd_write_message(char *message)
 
 	for(i = 0; i < strlen(message); i++)
 	{
-		if(message[i] == newline_seperator) _lcd_write(0xC0, 1); else _lcd_write(message[i], 0);
+		if(message[i] == newline_seperator)
+		{
+			lines++;
+			switch(lines)
+			{
+				case 1:
+					_lcd_write((DDRAM_SET | 0x40), 1);
+					break;				
+				case 2:
+					_lcd_write((DDRAM_SET | 0x14), 1);
+					break;				
+				case 3:
+					_lcd_write((DDRAM_SET | 0x54), 1);
+					break;
+				default:
+					printk(KERN_WARNING "Only 4 lines are supported. Cannot move to line [%d]. Omitting message from index [%i] on....\n", lines+1, i);
+					goto cleanup;		
+			}
+		}
+		else
+		{
+			 _lcd_write(message[i], 0);
+		}
 	}
+
+	cleanup:
 
 	//Set cursor to home
 	msleep(2);	
-	_lcd_write(0x02,1);
+	_lcd_write(0x02, 1);
 	msleep(2);
 
 	//release
@@ -226,51 +277,54 @@ void _lcd_init(void)
 
 int _lcd_setup(void)
 {
-	struct dentry *file_entry;
-	struct dentry *bool_entry;
-	struct dentry *newline_entry;
-	struct dentry *clear_entry;
-	
 	//debugfs dir
-	root_entry = debugfs_create_dir("hd44780-lcd", 0);
-	if(root_entry == 0)
+	if((root_entry = debugfs_create_dir("hd44780-lcd", 0)) == 0)
 	{
 		printk(KERN_ERR "Unable to create debugfs root directory\n");
 		return -1;
 	}
 
 	//debugfs file write buffer
-	file_entry = debugfs_create_file("write_buffer", 0220, root_entry, &lcdbuffer, &lcdwrite_fops);
-	if(file_entry == 0)
+	if(debugfs_create_file("write_message", 0220, root_entry, &lcdbuffer, &lcdwritemessage_fops) == 0)
 	{
 		printk(KERN_ERR "Unable to create debugfs file\n");
 		return -1;
 	}
 
 	//debugfs bool entry
-	bool_entry = debugfs_create_bool("clear_before_write_message", 0660, root_entry, &clear_before_write_message);
-	if(bool_entry == 0)
+	if(debugfs_create_bool("clear_before_write_message", 0660, root_entry, &clear_before_write_message) == 0)
 	{
 		printk(KERN_ERR "Unable to create debugfs bool\n");
 		return -1;
 	}
 
 	//debugfs newline seperator
-	newline_entry = debugfs_create_u8("newline_seperator", 0660, root_entry, &newline_seperator);
-    if(newline_entry == 0)
+	if(debugfs_create_u8("newline_seperator", 0660, root_entry, &newline_seperator) == 0)
     {
         printk(KERN_ERR "Unable to create debugfs u8 newline entry\n");
         return -1;
     }
 	
 	//debugfs clear lcd
-	clear_entry = debugfs_create_file("clear", 0000, root_entry, &lcdbuffer, &lcdclear_fops);
-	if(clear_entry == 0)
+	if(debugfs_create_file("clear", 0000, root_entry, &lcdbuffer, &lcdclear_fops) == 0)
 	{
 		printk(KERN_ERR "Unable to create debugfs file to clear lcd\n");
 		return -1;
 	}
 
+	//debugfs send char
+	if(debugfs_create_file("write_char", 0220, root_entry, &lcdbuffer, &lcdwritechar_fops) == 0)
+	{
+		printk(KERN_ERR "Unable to create debugfs file to write char to lcd\n");
+        return -1;
+	}
+
+	//debugfs send command
+	if(debugfs_create_file("write_command", 0220, root_entry, &lcdbuffer, &lcdwritecmd_fops) == 0)
+	{
+		printk(KERN_ERR "Unable to create debugfs file to write command to lcd\n");
+        return -1;
+	}
 	//request the region of io mapped memory
 	if(request_mem_region(GPIO, NUM_PORTS, "hd44780-lcd") == NULL)
 	{
@@ -314,7 +368,7 @@ static int __init mod_init(void)
 	_lcd_init();
 
 	//Put something on the screen
-	lcd_write_message("  Hello From+  Kernel Space!");	
+	lcd_write_message("  Hello From+  Kernel Space+  Today is a great  +  Day!");
 
 	//done
 	return 0;
