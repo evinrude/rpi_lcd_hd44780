@@ -50,6 +50,7 @@ void lcd_clear(void);
 void lcd_write_message(char *message);
 void _lcd_init(void);
 int _lcd_setup(void);
+int _cdev_setup(void);
 static int __init mod_init(void);
 static void __exit mod_exit(void);
 static unsigned long GPIO = 0x20200000;
@@ -357,24 +358,16 @@ int _lcd_setup(void)
 	return 0;	
 }
 
-static int __init mod_init(void)
+int _cdev_setup(void)
 {
-	//setup
-	if(_lcd_setup() != 0) return -1;
-	
-	//initialize the lcd
-	_lcd_init();
-
-	//Put something on the screen
-	lcd_write_message("  Hello From+  Kernel Space+  Today is a great  +  Day!");
-
-	//Allocate and create the character device
+	//Dynamically assign major number
 	if(alloc_chrdev_region(&lcd_device_major, 0, 1, CHAR_DEVICE_NAME) != 0)
 	{
 		printk(KERN_ERR "Dynamic character device creation failed");
-		return -EIO;
+		return -1;
 	}
 
+	//setup cdev
     lcd_device_number = MKDEV(MAJOR(lcd_device_major), MINOR((dev_t)0));	
 	lcd_cdev = cdev_alloc();
 	lcd_cdev->ops = &lcdwritemessage_fops;
@@ -383,12 +376,32 @@ static int __init mod_init(void)
 	if(cdev_add(lcd_cdev, lcd_device_number, 1))
 	{
 		printk(KERN_ERR "Failed to add character device for lcd\n");
-		return -EIO;
+		return -1;
 	}
 	else
 	{
 		printk(KERN_INFO "LCD Major [%d] MINOR [%d]\n", MAJOR(lcd_device_number), MINOR(lcd_device_number));		
 	}
+
+	return 0;
+}
+
+static int __init mod_init(void)
+{
+	char buf[MAXBUF];	
+
+	//cdev setup
+	if(_cdev_setup() != 0) return -1;
+
+	//lcd setup
+	if(_lcd_setup() != 0) return -1;
+	
+	//initialize the lcd
+	_lcd_init();
+
+	//Put something on the screen
+	sprintf(buf, "cdev[%d:%d]+RS:%d EN:%d+DB4:%d DB5:%d+DB6:%d DB7:%d", MAJOR(lcd_device_number), MINOR(lcd_device_number), RS, EN, DB4, DB5, DB6, DB7);
+	lcd_write_message(buf);
 
 	//done
 	return 0;
@@ -418,4 +431,4 @@ module_exit(mod_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mickey Malone");
-MODULE_DESCRIPTION("Raspberry Pi hd44780 20x4 lcd controller");
+MODULE_DESCRIPTION("Raspberry Pi HD44780 20x4 lcd controller");

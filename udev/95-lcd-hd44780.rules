@@ -1,0 +1,2 @@
+ACTION=="add" DEVPATH=="/module/lcd_hd44780" RUN+="/etc/udev/scripts/lcd-hd44780.sh"
+ACTION=="remove" DEVPATH=="/module/lcd_hd44780" RUN+="/etc/udev/scripts/lcd-hd44780.sh remove"
