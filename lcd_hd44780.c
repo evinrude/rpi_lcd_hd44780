@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/semaphore.h>
+#include <linux/cdev.h>
 
 /** convenience macros **/
 #define MAXBUF 83
@@ -30,6 +31,7 @@
 #define DB6 27
 #define DB7 22
 #define DDRAM_SET 0x80
+#define CHAR_DEVICE_NAME "lcd"
 
 #define IOREAD32(OFFSET) ((unsigned long) ioread32((void *)(GPIO_BASE + OFFSET)))
 #define IOADDRESS32(OFFSET) ((void *)(GPIO_BASE + OFFSET))
@@ -55,6 +57,9 @@ static unsigned long GPIO_BASE = 0;
 static struct dentry *root_entry;
 
 /** globals **/
+static struct cdev *lcd_cdev;
+static dev_t lcd_device_major;
+static dev_t lcd_device_number;
 static char lcdbuffer[MAXBUF];
 static u32 clear_before_write_message = 0;
 static u8 newline_seperator = '+';
@@ -284,13 +289,6 @@ int _lcd_setup(void)
 		return -1;
 	}
 
-	//debugfs file write buffer
-	if(debugfs_create_file("write_message", 0220, root_entry, &lcdbuffer, &lcdwritemessage_fops) == 0)
-	{
-		printk(KERN_ERR "Unable to create debugfs file\n");
-		return -1;
-	}
-
 	//debugfs bool entry
 	if(debugfs_create_bool("clear_before_write_message", 0660, root_entry, &clear_before_write_message) == 0)
 	{
@@ -370,6 +368,28 @@ static int __init mod_init(void)
 	//Put something on the screen
 	lcd_write_message("  Hello From+  Kernel Space+  Today is a great  +  Day!");
 
+	//Allocate and create the character device
+	if(alloc_chrdev_region(&lcd_device_major, 0, 1, CHAR_DEVICE_NAME) != 0)
+	{
+		printk(KERN_ERR "Dynamic character device creation failed");
+		return -EIO;
+	}
+
+    lcd_device_number = MKDEV(MAJOR(lcd_device_major), MINOR((dev_t)0));	
+	lcd_cdev = cdev_alloc();
+	lcd_cdev->ops = &lcdwritemessage_fops;
+	lcd_cdev->owner = THIS_MODULE;
+
+	if(cdev_add(lcd_cdev, lcd_device_number, 1))
+	{
+		printk(KERN_ERR "Failed to add character device for lcd\n");
+		return -EIO;
+	}
+	else
+	{
+		printk(KERN_INFO "LCD Major [%d] MINOR [%d]\n", MAJOR(lcd_device_number), MINOR(lcd_device_number));		
+	}
+
 	//done
 	return 0;
 }
@@ -387,6 +407,10 @@ static void __exit mod_exit(void)
 	
 	//return the region of memory
 	release_mem_region(GPIO, NUM_PORTS);
+
+	//unregister the character device
+	cdev_del(lcd_cdev);
+	unregister_chrdev_region(lcd_device_major, 1);
 }
 
 module_init(mod_init);
@@ -394,3 +418,4 @@ module_exit(mod_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mickey Malone");
+MODULE_DESCRIPTION("Raspberry Pi hd44780 20x4 lcd controller");
