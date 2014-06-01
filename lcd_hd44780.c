@@ -8,6 +8,7 @@
 #include <linux/uaccess.h>
 #include <linux/semaphore.h>
 #include <linux/cdev.h>
+#include <linux/reboot.h>
 
 /** convenience macros **/
 #define MAXBUF 83
@@ -37,6 +38,10 @@
 #define IOADDRESS32(OFFSET) ((void *)(GPIO_BASE + OFFSET))
 #define GPIO_ON(GPIO) iowrite32(1 << GPIO, IOADDRESS32(GPSET0_OFFSET))
 #define GPIO_OFF(GPIO) iowrite32(1 << GPIO, IOADDRESS32(GPCLR0_OFFSET))
+#define SET_GPIO(GPIO) if(GPIO/10 > 1) \
+iowrite32(((IOREAD32(GPFSEL2_OFFSET) & ~(7 << ((GPIO % 10) * 3))) | (1 << ((GPIO % 10) * 3))), IOADDRESS32(GPFSEL2_OFFSET)); \
+else \
+iowrite32(((IOREAD32(GPFSEL1_OFFSET) & ~(7 << ((GPIO % 10) * 3))) | (1 << ((GPIO % 10) * 3))), IOADDRESS32(GPFSEL1_OFFSET));
 
 /** prototypes **/
 static ssize_t fops_lcdclear(struct inode *inodep, struct file *filep);
@@ -51,13 +56,15 @@ void lcd_write_message(char *message);
 void _lcd_init(void);
 int _lcd_setup(void);
 int _cdev_setup(void);
+int reboot_notify(struct notifier_block *nb, unsigned long action, void *data);
 static int __init mod_init(void);
 static void __exit mod_exit(void);
+
+
+/** globals **/
 static unsigned long GPIO = 0x20200000;
 static unsigned long GPIO_BASE = 0;
 static struct dentry *root_entry;
-
-/** globals **/
 static struct cdev *lcd_cdev;
 static dev_t lcd_device_major;
 static dev_t lcd_device_number;
@@ -65,6 +72,9 @@ static char lcdbuffer[MAXBUF];
 static u32 clear_before_write_message = 0;
 static u8 newline_seperator = '+';
 struct semaphore sem;
+static struct notifier_block nb = {
+	.notifier_call = reboot_notify,
+};
 struct file_operations lcdwritemessage_fops = {
 	.owner = THIS_MODULE,
 	.write = fops_lcdwritemessage,
@@ -334,24 +344,14 @@ int _lcd_setup(void)
 	//get the virtual address to the io mapped memory
 	GPIO_BASE = (unsigned long) ioremap(GPIO, NUM_PORTS);
 
-	// make gpio #25 an output
-	iowrite32((IOREAD32(GPFSEL2_OFFSET) & ~(7 << 15)) | (1 << 15), IOADDRESS32(GPFSEL2_OFFSET));
+	// Setup all GPIO's needed for 4bit mode
+	SET_GPIO(RS);
+	SET_GPIO(EN);
+	SET_GPIO(DB4);
+	SET_GPIO(DB5);
+	SET_GPIO(DB6);
+	SET_GPIO(DB7);
 	
-	// make gpio #24 an output
-	iowrite32((IOREAD32(GPFSEL2_OFFSET) & ~(7 << 12)) | (1 << 12), IOADDRESS32(GPFSEL2_OFFSET));
-	
-	// make gpio #17 an output
-	iowrite32((IOREAD32(GPFSEL1_OFFSET) & ~(7 << 21)) | (1 << 21), IOADDRESS32(GPFSEL1_OFFSET));
-
-	// make gpio #22 an output
-	iowrite32((IOREAD32(GPFSEL2_OFFSET) & ~(7 << 6)) | (1 << 6), IOADDRESS32(GPFSEL2_OFFSET));
-
-	// make gpio #23 an output
-	iowrite32((IOREAD32(GPFSEL2_OFFSET) & ~(7 << 9)) | (1 << 9), IOADDRESS32(GPFSEL2_OFFSET));
-
-	// make gpio #23 an output
-	iowrite32((IOREAD32(GPFSEL2_OFFSET) & ~(7 << 21)) | (1 << 21), IOADDRESS32(GPFSEL2_OFFSET));
-
 	//initialize the semaphore for atomic write operations on the lcd
 	sema_init(&sem, 1);
 
@@ -386,6 +386,17 @@ int _cdev_setup(void)
 	return 0;
 }
 
+int reboot_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	//clear the screen
+	lcd_clear();
+
+	//write that we are entering a power down state
+	lcd_write_message("+  Powering down");
+
+	return 0;
+}
+
 static int __init mod_init(void)
 {
 	char buf[MAXBUF];	
@@ -402,6 +413,9 @@ static int __init mod_init(void)
 	//Put something on the screen
 	sprintf(buf, "cdev[%d:%d]+RS:%d EN:%d+DB4:%d DB5:%d+DB6:%d DB7:%d", MAJOR(lcd_device_number), MINOR(lcd_device_number), RS, EN, DB4, DB5, DB6, DB7);
 	lcd_write_message(buf);
+
+	//notify this module about system state changes
+	if(register_reboot_notifier(&nb)) printk(KERN_WARNING "Failed to register reboot notifier\n");
 
 	//done
 	return 0;
@@ -424,6 +438,7 @@ static void __exit mod_exit(void)
 	//unregister the character device
 	cdev_del(lcd_cdev);
 	unregister_chrdev_region(lcd_device_major, 1);
+
 }
 
 module_init(mod_init);
