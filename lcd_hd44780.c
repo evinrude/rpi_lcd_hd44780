@@ -9,10 +9,16 @@
 #include <linux/semaphore.h>
 #include <linux/cdev.h>
 #include <linux/reboot.h>
+#include <linux/slab.h>
+
+/** about this module **/
+#define MOD_VERSION "v1.1 Baby Sasquatch"
+#define MOD_NAME "lcd_hd44780"
 
 /** convenience macros **/
 #define MAXBUF 83
 #define NUM_PORTS 14
+#define GPIO_START 0x20200000
 #define GPFSEL0_OFFSET 0x00000000
 #define GPFSEL1_OFFSET 0x00000004
 #define GPFSEL2_OFFSET 0x00000008
@@ -34,14 +40,20 @@
 #define DDRAM_SET 0x80
 #define CHAR_DEVICE_NAME "lcd"
 
-#define IOREAD32(OFFSET) ((unsigned long) ioread32((void *)(GPIO_BASE + OFFSET)))
-#define IOADDRESS32(OFFSET) ((void *)(GPIO_BASE + OFFSET))
+#define IOREAD32(OFFSET) ((unsigned long) ioread32((void *)(lcd_hd44780->gpio_base + OFFSET)))
+#define IOADDRESS32(OFFSET) ((void *)(lcd_hd44780->gpio_base + OFFSET))
 #define GPIO_ON(GPIO) iowrite32(1 << GPIO, IOADDRESS32(GPSET0_OFFSET))
 #define GPIO_OFF(GPIO) iowrite32(1 << GPIO, IOADDRESS32(GPCLR0_OFFSET))
 #define SET_GPIO(GPIO) if(GPIO/10 > 1) \
 iowrite32(((IOREAD32(GPFSEL2_OFFSET) & ~(7 << ((GPIO % 10) * 3))) | (1 << ((GPIO % 10) * 3))), IOADDRESS32(GPFSEL2_OFFSET)); \
 else \
 iowrite32(((IOREAD32(GPFSEL1_OFFSET) & ~(7 << ((GPIO % 10) * 3))) | (1 << ((GPIO % 10) * 3))), IOADDRESS32(GPFSEL1_OFFSET));
+
+#define LOGGER_INFO(fmt, args ...) printk( KERN_INFO "%s: [info]  %s(%d): " fmt, MOD_NAME,  __FUNCTION__, __LINE__, ## args)
+#define LOGGER_ERR(fmt, args ...) printk( KERN_ERR "%s: [err]  %s(%d): " fmt, MOD_NAME, __FUNCTION__, __LINE__, ## args)
+#define LOGGER_WARN(fmt, args ...) printk( KERN_ERR "%s: [warn]  %s(%d): " fmt, MOD_NAME, __FUNCTION__, __LINE__, ## args)
+#define LOGGER_DEBUG(fmt, args ...) if (debug == 1) { printk( KERN_DEBUG "%s: [debug]  %s(%d): " fmt, MOD_NAME, __FUNCTION__, __LINE__, ## args); }
+
 
 /** prototypes **/
 static ssize_t fops_lcdclear(struct inode *inodep, struct file *filep);
@@ -51,97 +63,118 @@ static ssize_t fops_lcdwritecmd(struct file *filep, const char __user *buff, siz
 void _toggle_en(void);
 void _write_nibble(unsigned char nibble);
 void _lcd_write(unsigned char c, int is_command);
-void lcd_clear(void);
-void lcd_write_message(char *message);
+static void lcd_clear(void);
+static void lcd_write_message(char *message);
 void _lcd_init(void);
 int _lcd_setup(void);
 int _cdev_setup(void);
+int _lcdh_setup(void);
 int reboot_notify(struct notifier_block *nb, unsigned long action, void *data);
 static int __init mod_init(void);
 static void __exit mod_exit(void);
 
+/** main data structure **/
+struct lcdh {
+	struct cdev *lcd_cdev;							/** character device  **/
+	struct dentry *root_entry;  					/** debugfs root entry **/
+	unsigned long gpio_base;						/** virtual address to the io mapped memory at GPIO_START **/
+	dev_t lcd_device_major;							/** dynamic major number **/
+	dev_t lcd_device_number;						/** major and minor numbers combined **/
+	char lcdbuffer[MAXBUF];							/** lcd message buffer **/
+	u32 clear_before_write_message;					/** used as a boolean to indicate a clear before write **/
+	u8 newline_seperator;							/** newline seperator **/
+	struct semaphore sem;							/** semaphore used to guarantee atomic message writing to the lcd **/
+};
 
 /** globals **/
-static unsigned long GPIO = 0x20200000;
-static unsigned long GPIO_BASE = 0;
-static struct dentry *root_entry;
-static struct cdev *lcd_cdev;
-static dev_t lcd_device_major;
-static dev_t lcd_device_number;
-static char lcdbuffer[MAXBUF];
-static u32 clear_before_write_message = 0;
-static u8 newline_seperator = '+';
-struct semaphore sem;
-static struct notifier_block nb = {
-	.notifier_call = reboot_notify,
-};
-struct file_operations lcdwritemessage_fops = {
+static int debug = 0;
+static struct lcdh *lcd_hd44780;
+static struct file_operations lcdwritemessage_fops = {
 	.owner = THIS_MODULE,
 	.write = fops_lcdwritemessage,
 };
-struct file_operations lcdclear_fops = {
+static struct file_operations lcdclear_fops = {
 	.owner = THIS_MODULE,
 	.open = fops_lcdclear,
 };
-struct file_operations lcdwritechar_fops = {
+static struct file_operations lcdwritechar_fops = {
 	.owner = THIS_MODULE,
 	.write = fops_lcdwritechar,
 };
-struct file_operations lcdwritecmd_fops = {
+static struct file_operations lcdwritecmd_fops = {
 	.owner = THIS_MODULE,
 	.write = fops_lcdwritecmd,
 };
+static struct notifier_block nb = {
+	.notifier_call = reboot_notify,
+};
+
+/** module options **/
+module_param(debug, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(debug, "Set the log level to debug");
 
 static int fops_lcdclear(struct inode *inodep, struct file *filep)
 {
+	LOGGER_DEBUG("Received innvocation from user space\n");
 	lcd_clear();
 	return 0;
 }
 
 static ssize_t fops_lcdwritemessage(struct file *filp, const char __user *buff, size_t len, loff_t *off)
 {
+	LOGGER_DEBUG("Received innvocation from user space\n");
 	if(len > MAXBUF)
 	{
-		printk(KERN_ERR "Unsupported string size [%d]. Must be less than [%d]\n", len, MAXBUF);
+		LOGGER_ERR("Unsupported string size [%d]. Must be less than [%d]\n", len, MAXBUF);
 		return -EIO;
 	}
 
 	//grab the data from userspace
-	memset(&lcdbuffer, 0, MAXBUF);
-	if(copy_from_user(&lcdbuffer, buff, len))
+	memset(&lcd_hd44780->lcdbuffer, 0, MAXBUF);
+	if(copy_from_user(lcd_hd44780->lcdbuffer, buff, len))
 	{
-		printk(KERN_ERR "copy_from_user failed\n");
+		LOGGER_ERR("copy_from_user failed\n");
 		return -EIO;
 	}
 
+	LOGGER_DEBUG("Copied char into the buffer [%c]\n", lcd_hd44780->lcdbuffer[0]);
+
 	//leave a message
-	lcd_write_message(lcdbuffer);
+	lcd_write_message(lcd_hd44780->lcdbuffer);
 	return len;
 }
 
 static ssize_t fops_lcdwritechar(struct file *filep, const char __user *buff, size_t len, loff_t *off)
 {
-	memset(&lcdbuffer, 0, 1);
-	if(copy_from_user(&lcdbuffer, buff, len))
+	LOGGER_DEBUG("Received innvocation from user space\n");
+
+	memset(&lcd_hd44780->lcdbuffer, 0, 1);
+	if(copy_from_user(lcd_hd44780->lcdbuffer, buff, len))
 	{
-		printk(KERN_ERR "copy_from_user failed\n");
+		LOGGER_ERR("copy_from_user failed\n");
 		return -EIO;
 	}
 
-	_lcd_write(lcdbuffer[0], 0);
+	LOGGER_DEBUG("Copied [%d] bytes into the buffer [%s]\n", len, lcd_hd44780->lcdbuffer);
+
+	_lcd_write(lcd_hd44780->lcdbuffer[0], 0);
 	return len;
 }
 
 static ssize_t fops_lcdwritecmd(struct file *filep, const char __user *buff, size_t len, loff_t *off)
 {
-	memset(&lcdbuffer, 0, 1);
-	if(copy_from_user(&lcdbuffer, buff, len))
+	LOGGER_DEBUG("Received innvocation from user space\n");
+
+	memset(&lcd_hd44780->lcdbuffer, 0, 1);
+	if(copy_from_user(lcd_hd44780->lcdbuffer, buff, len))
 	{
-		printk(KERN_ERR "copy_from_user failed\n");
+		LOGGER_ERR("copy_from_user failed\n");
 		return -EIO;
 	}
 
-	_lcd_write(lcdbuffer[0], 1);
+	LOGGER_DEBUG("Copied lcd command into the buffer [0x%X]\n", lcd_hd44780->lcdbuffer[0]);
+
+	_lcd_write(lcd_hd44780->lcdbuffer[0], 1);
 	return len;
 }
 
@@ -183,52 +216,63 @@ void _lcd_write(unsigned char c, int is_command)
 	_toggle_en();
 }
 
-void lcd_clear(void)
+static void lcd_clear(void)
 {
+	LOGGER_DEBUG("Innvocation\n");
 	_lcd_write(0x01, 1);
 	msleep(20);
 }
 EXPORT_SYMBOL(lcd_clear);
 
-void lcd_write_message(char *message)
+static void lcd_write_message(char *message)
 {
 	int i = 0;
 	int lines = 0;	
 	
+	LOGGER_DEBUG("Innvocation with message [%s]\n", message);
+	
 	//grab
-	down(&sem);
+	LOGGER_DEBUG("Attempting to down the semaphore\n");
+	down(&lcd_hd44780->sem);
+	LOGGER_DEBUG("Semaphore down\n");
 
 	//do we need to clear the lcd first
-	if(clear_before_write_message) lcd_clear();
+	if(lcd_hd44780->clear_before_write_message) lcd_clear();
 
 	for(i = 0; i < strlen(message); i++)
 	{
-		if(message[i] == newline_seperator)
+		if(message[i] == lcd_hd44780->newline_seperator)
 		{
 			lines++;
+			LOGGER_DEBUG("Newline detected and incremented to [%d]\n", lines);
 			switch(lines)
 			{
 				case 1:
+					LOGGER_DEBUG("Sending command to lcd [0x40]\n");
 					_lcd_write((DDRAM_SET | 0x40), 1);
 					break;				
 				case 2:
+					LOGGER_DEBUG("Sending command to lcd [0x14]\n");
 					_lcd_write((DDRAM_SET | 0x14), 1);
 					break;				
 				case 3:
+					LOGGER_DEBUG("Sending command to lcd [0x54]\n");
 					_lcd_write((DDRAM_SET | 0x54), 1);
 					break;
 				default:
-					printk(KERN_WARNING "Only 4 lines are supported. Cannot move to line [%d]. Omitting message from index [%i] on....\n", lines+1, i);
+					LOGGER_WARN("Only 4 lines are supported. Cannot move to line [%d]. Omitting message from index [%i] on....\n", lines+1, i);
 					goto cleanup;		
 			}
 		}
 		else
 		{
-			 _lcd_write(message[i], 0);
+			LOGGER_DEBUG("Sending char to lcd [%c]\n", message[i]);
+			_lcd_write(message[i], 0);
 		}
 	}
 
 	cleanup:
+	LOGGER_DEBUG("Performing cleanup\n");
 
 	//Set cursor to home
 	msleep(2);	
@@ -236,12 +280,16 @@ void lcd_write_message(char *message)
 	msleep(2);
 
 	//release
-	up(&sem);
+	LOGGER_DEBUG("Attempting to down the semaphore\n");
+	up(&lcd_hd44780->sem);
+	LOGGER_DEBUG("Semaphore up\n");
 }
 EXPORT_SYMBOL(lcd_write_message);
 
 void _lcd_init(void)
 {
+	LOGGER_DEBUG("Innvocation\n");
+
 	//delay
 	msleep(250);
 
@@ -293,56 +341,58 @@ void _lcd_init(void)
 
 int _lcd_setup(void)
 {
+	LOGGER_DEBUG("Innvocation\n");
+
 	//debugfs dir
-	if((root_entry = debugfs_create_dir("hd44780-lcd", 0)) == 0)
+	if((lcd_hd44780->root_entry = debugfs_create_dir("hd44780-lcd", 0)) == 0)
 	{
-		printk(KERN_ERR "Unable to create debugfs root directory\n");
+		LOGGER_ERR("Unable to create debugfs root directory\n");
 		return -1;
 	}
 
 	//debugfs bool entry
-	if(debugfs_create_bool("clear_before_write_message", 0660, root_entry, &clear_before_write_message) == 0)
+	if(debugfs_create_bool("clear_before_write_message", 0660, lcd_hd44780->root_entry, &lcd_hd44780->clear_before_write_message) == 0)
 	{
-		printk(KERN_ERR "Unable to create debugfs bool\n");
+		LOGGER_ERR("Unable to create debugfs bool\n");
 		return -1;
 	}
 
 	//debugfs newline seperator
-	if(debugfs_create_u8("newline_seperator", 0660, root_entry, &newline_seperator) == 0)
+	if(debugfs_create_u8("newline_seperator", 0660, lcd_hd44780->root_entry, &lcd_hd44780->newline_seperator) == 0)
     {
-        printk(KERN_ERR "Unable to create debugfs u8 newline entry\n");
+        LOGGER_ERR("Unable to create debugfs u8 newline entry\n");
         return -1;
     }
 	
 	//debugfs clear lcd
-	if(debugfs_create_file("clear", 0000, root_entry, &lcdbuffer, &lcdclear_fops) == 0)
+	if(debugfs_create_file("clear", 0000, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdclear_fops) == 0)
 	{
-		printk(KERN_ERR "Unable to create debugfs file to clear lcd\n");
+		LOGGER_ERR("Unable to create debugfs file to clear lcd\n");
 		return -1;
 	}
 
 	//debugfs send char
-	if(debugfs_create_file("write_char", 0220, root_entry, &lcdbuffer, &lcdwritechar_fops) == 0)
+	if(debugfs_create_file("write_char", 0220, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdwritechar_fops) == 0)
 	{
-		printk(KERN_ERR "Unable to create debugfs file to write char to lcd\n");
+		LOGGER_ERR("Unable to create debugfs file to write char to lcd\n");
         return -1;
 	}
 
 	//debugfs send command
-	if(debugfs_create_file("write_command", 0220, root_entry, &lcdbuffer, &lcdwritecmd_fops) == 0)
+	if(debugfs_create_file("write_command", 0220, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdwritecmd_fops) == 0)
 	{
-		printk(KERN_ERR "Unable to create debugfs file to write command to lcd\n");
+		LOGGER_ERR("Unable to create debugfs file to write command to lcd\n");
         return -1;
 	}
 	//request the region of io mapped memory
-	if(request_mem_region(GPIO, NUM_PORTS, "hd44780-lcd") == NULL)
+	if(request_mem_region(GPIO_START, NUM_PORTS, "hd44780-lcd") == NULL)
 	{
-		printk("Not able to map I/0\n");
+		LOGGER_ERR("Not able to map I/0\n");
 		return -1;
 	}
 
 	//get the virtual address to the io mapped memory
-	GPIO_BASE = (unsigned long) ioremap(GPIO, NUM_PORTS);
+	lcd_hd44780->gpio_base = (unsigned long) ioremap(GPIO_START, NUM_PORTS);
 
 	// Setup all GPIO's needed for 4bit mode
 	SET_GPIO(RS);
@@ -353,92 +403,139 @@ int _lcd_setup(void)
 	SET_GPIO(DB7);
 	
 	//initialize the semaphore for atomic write operations on the lcd
-	sema_init(&sem, 1);
+	sema_init(&lcd_hd44780->sem, 1);
 
 	return 0;	
 }
 
 int _cdev_setup(void)
 {
+	LOGGER_DEBUG("Setting up the lcd module\n");
+	
 	//Dynamically assign major number
-	if(alloc_chrdev_region(&lcd_device_major, 0, 1, CHAR_DEVICE_NAME) != 0)
+	if(alloc_chrdev_region(&lcd_hd44780->lcd_device_major, 0, 1, CHAR_DEVICE_NAME) != 0)
 	{
-		printk(KERN_ERR "Dynamic character device creation failed");
+		LOGGER_ERR("Dynamic character device creation failed");
 		return -1;
 	}
 
 	//setup cdev
-    lcd_device_number = MKDEV(MAJOR(lcd_device_major), MINOR((dev_t)0));	
-	lcd_cdev = cdev_alloc();
-	lcd_cdev->ops = &lcdwritemessage_fops;
-	lcd_cdev->owner = THIS_MODULE;
+    lcd_hd44780->lcd_device_number = MKDEV(MAJOR(lcd_hd44780->lcd_device_major), MINOR((dev_t)0));	
+	lcd_hd44780->lcd_cdev = cdev_alloc();
+	lcd_hd44780->lcd_cdev->ops = &lcdwritemessage_fops;
+	lcd_hd44780->lcd_cdev->owner = THIS_MODULE;
 
-	if(cdev_add(lcd_cdev, lcd_device_number, 1))
+	if(cdev_add(lcd_hd44780->lcd_cdev, lcd_hd44780->lcd_device_number, 1))
 	{
-		printk(KERN_ERR "Failed to add character device for lcd\n");
+		LOGGER_ERR("Failed to add character device for lcd\n");
 		return -1;
 	}
-	else
+	
+	LOGGER_DEBUG("LCD Major [%d] MINOR [%d]\n", MAJOR(lcd_hd44780->lcd_device_number), MINOR(lcd_hd44780->lcd_device_number));		
+
+	return 0;
+}
+
+int _lcdh_setup(void)
+{
+	LOGGER_DEBUG("Innvocation\n");	
+
+	lcd_hd44780 = kmalloc(sizeof(struct lcdh), GFP_KERNEL);
+	if(!lcd_hd44780)
 	{
-		printk(KERN_INFO "LCD Major [%d] MINOR [%d]\n", MAJOR(lcd_device_number), MINOR(lcd_device_number));		
+		LOGGER_ERR("Failed to kmalloc lcdh\n");
+		return -1;
 	}
+
+	lcd_hd44780->clear_before_write_message = 0;
+	lcd_hd44780->newline_seperator = '+';
 
 	return 0;
 }
 
 int reboot_notify(struct notifier_block *nb, unsigned long action, void *data)
 {
+	LOGGER_DEBUG("Reboot notifier invoked with action [%lu] data [%p]\n", action, data);
+
 	//clear the screen
 	lcd_clear();
 
 	//write that we are entering a power down state
 	lcd_write_message("+  Powering down");
 
-	return 0;
+	return NOTIFY_DONE;
 }
 
 static int __init mod_init(void)
 {
 	char buf[MAXBUF];	
 
+	LOGGER_INFO("%s\n", MOD_VERSION);
+
+	//main data structure setup
+	LOGGER_DEBUG("Setting up the main data structure\n");
+	if(_lcdh_setup() != 0) return -1;
+
 	//cdev setup
+	LOGGER_DEBUG("Setting up cdev\n");
 	if(_cdev_setup() != 0) return -1;
 
 	//lcd setup
+	LOGGER_DEBUG("Setting up lcd\n");
 	if(_lcd_setup() != 0) return -1;
 	
 	//initialize the lcd
+	LOGGER_DEBUG("Initializing the lcd\n");
 	_lcd_init();
 
 	//Put something on the screen
-	sprintf(buf, "cdev[%d:%d]+RS:%d EN:%d+DB4:%d DB5:%d+DB6:%d DB7:%d", MAJOR(lcd_device_number), MINOR(lcd_device_number), RS, EN, DB4, DB5, DB6, DB7);
+	sprintf(buf, "cdev[%d:%d]+RS:%d EN:%d+DB4:%d DB5:%d+DB6:%d DB7:%d", MAJOR(lcd_hd44780->lcd_device_number), MINOR(lcd_hd44780->lcd_device_number), RS, EN, DB4, DB5, DB6, DB7);
+	LOGGER_DEBUG("Displaying the greeting message on the lcd [%s}\n", buf);
 	lcd_write_message(buf);
 
 	//notify this module about system state changes
-	if(register_reboot_notifier(&nb)) printk(KERN_WARNING "Failed to register reboot notifier\n");
+	LOGGER_DEBUG("Registering reboot notifier\n");
+	if(register_reboot_notifier(&nb)) LOGGER_ERR("Failed to register reboot notifier\n");
 
 	//done
+	LOGGER_DEBUG("Module initialization complete\n");
 	return 0;
 }
 
 static void __exit mod_exit(void)
 {
+	LOGGER_INFO("Module Exit");
+
 	//remove the debugfs created dirs and files
-	debugfs_remove_recursive(root_entry);
+	LOGGER_DEBUG("Unregistering debugfs entries\n");
+	debugfs_remove_recursive(lcd_hd44780->root_entry);
 
 	//clear the display
+	LOGGER_DEBUG("Clear the lcd\n");
 	lcd_clear();
 
 	//return the virtual address to the pool
-	iounmap((void *)GPIO_BASE);
+	LOGGER_DEBUG("Retrurning virtual address to the pool\n");
+	iounmap((void *)lcd_hd44780->gpio_base);
 	
 	//return the region of memory
-	release_mem_region(GPIO, NUM_PORTS);
+	LOGGER_DEBUG("Releasing GPIO memory\n");
+	release_mem_region(GPIO_START, NUM_PORTS);
 
 	//unregister the character device
-	cdev_del(lcd_cdev);
-	unregister_chrdev_region(lcd_device_major, 1);
+	LOGGER_DEBUG("Unregistering character device entry\n");
+	cdev_del(lcd_hd44780->lcd_cdev);
+	unregister_chrdev_region(lcd_hd44780->lcd_device_major, 1);
 
+	//unregister the reboot notifier
+	LOGGER_DEBUG("Unregistering reboot notifier\n");
+	unregister_reboot_notifier(&nb);
+
+	//free the main data structure
+	LOGGER_DEBUG("Freeing the main data structure\n");
+	kfree(lcd_hd44780);
+
+	LOGGER_DEBUG("Module cleanup complete\n");
 }
 
 module_init(mod_init);
