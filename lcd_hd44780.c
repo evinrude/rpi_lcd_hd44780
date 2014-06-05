@@ -45,10 +45,10 @@ iowrite32(((IOREAD32(GPFSEL2_OFFSET) & ~(7 << ((GPIO % 10) * 3))) | (1 << ((GPIO
 else \
 iowrite32(((IOREAD32(GPFSEL1_OFFSET) & ~(7 << ((GPIO % 10) * 3))) | (1 << ((GPIO % 10) * 3))), IOADDRESS32(GPFSEL1_OFFSET));
 
-#define LOGGER_INFO(fmt, args ...) printk( KERN_INFO "[info]  %s(%d): " fmt, __FUNCTION__, __LINE__, ## args)
-#define LOGGER_ERR(fmt, args ...) printk( KERN_ERR "[err]  %s(%d): " fmt, __FUNCTION__, __LINE__, ## args)
-#define LOGGER_WARN(fmt, args ...) printk( KERN_ERR "[warn]  %s(%d): " fmt, __FUNCTION__, __LINE__, ## args)
-#define LOGGER_DEBUG(fmt, args ...) if (debug == 1) { printk( KERN_DEBUG "[debug]  %s(%d): " fmt, __FUNCTION__, __LINE__, ## args); }
+#define LOGGER_INFO(fmt, args ...) printk( KERN_INFO "lcd_hd44780: [info]  %s(%d): " fmt,  __FUNCTION__, __LINE__, ## args)
+#define LOGGER_ERR(fmt, args ...) printk( KERN_ERR "lcd_hd44780: [err]  %s(%d): " fmt, __FUNCTION__, __LINE__, ## args)
+#define LOGGER_WARN(fmt, args ...) printk( KERN_ERR "lcd_hd44780: [warn]  %s(%d): " fmt, __FUNCTION__, __LINE__, ## args)
+#define LOGGER_DEBUG(fmt, args ...) if (debug == 1) { printk( KERN_DEBUG "lcd_hd44780: [debug]  %s(%d): " fmt, __FUNCTION__, __LINE__, ## args); }
 
 
 /** prototypes **/
@@ -79,7 +79,7 @@ struct lcdh {
 	char lcdbuffer[MAXBUF];							/** lcd message buffer **/
 	u32 clear_before_write_message;					/** used as a boolean to indicate a clear before write **/
 	u8 newline_seperator;							/** newline seperator **/
-	struct semaphore sem;							/** semaphore used for guaranteeing atomic message writing to the lcd **/
+	struct semaphore sem;							/** semaphore used to guarantee atomic message writing to the lcd **/
 };
 
 /** globals **/
@@ -420,13 +420,15 @@ int _lcdh_setup(void)
 
 int reboot_notify(struct notifier_block *nb, unsigned long action, void *data)
 {
+	LOGGER_DEBUG("Reboot notifier invoked with action [%lu] data [%p]\n", action, data);
+
 	//clear the screen
 	lcd_clear();
 
 	//write that we are entering a power down state
 	lcd_write_message("+  Powering down");
 
-	return 0;
+	return NOTIFY_DONE;
 }
 
 static int __init mod_init(void)
