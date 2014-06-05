@@ -76,7 +76,7 @@ static void __exit mod_exit(void);
 /** main data structure **/
 struct lcdh {
 	struct cdev *lcd_cdev;							/** character device  **/
-	struct dentry *root_entry;  					/** debugfs root entry **/
+	struct dentry *root_entry;						/** debugfs root entry **/
 	unsigned long gpio_base;						/** virtual address to the io mapped memory at GPIO_START **/
 	dev_t lcd_device_major;							/** dynamic major number **/
 	dev_t lcd_device_number;						/** major and minor numbers combined **/
@@ -359,10 +359,10 @@ int _lcd_setup(void)
 
 	//debugfs newline seperator
 	if(debugfs_create_u8("newline_seperator", 0660, lcd_hd44780->root_entry, &lcd_hd44780->newline_seperator) == 0)
-    {
+	{
         LOGGER_ERR("Unable to create debugfs u8 newline entry\n");
         return -1;
-    }
+	}
 	
 	//debugfs clear lcd
 	if(debugfs_create_file("clear", 0000, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdclear_fops) == 0)
