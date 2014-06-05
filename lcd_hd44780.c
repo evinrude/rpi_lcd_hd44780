@@ -360,8 +360,8 @@ int _lcd_setup(void)
 	//debugfs newline seperator
 	if(debugfs_create_u8("newline_seperator", 0660, lcd_hd44780->root_entry, &lcd_hd44780->newline_seperator) == 0)
 	{
-        LOGGER_ERR("Unable to create debugfs u8 newline entry\n");
-        return -1;
+		LOGGER_ERR("Unable to create debugfs u8 newline entry\n");
+		return -1;
 	}
 	
 	//debugfs clear lcd
@@ -375,14 +375,14 @@ int _lcd_setup(void)
 	if(debugfs_create_file("write_char", 0220, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdwritechar_fops) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs file to write char to lcd\n");
-        return -1;
+		return -1;
 	}
 
 	//debugfs send command
 	if(debugfs_create_file("write_command", 0220, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdwritecmd_fops) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs file to write command to lcd\n");
-        return -1;
+		return -1;
 	}
 	//request the region of io mapped memory
 	if(request_mem_region(GPIO_START, NUM_PORTS, "hd44780-lcd") == NULL)
@@ -420,7 +420,7 @@ int _cdev_setup(void)
 	}
 
 	//setup cdev
-    lcd_hd44780->lcd_device_number = MKDEV(MAJOR(lcd_hd44780->lcd_device_major), MINOR((dev_t)0));	
+	lcd_hd44780->lcd_device_number = MKDEV(MAJOR(lcd_hd44780->lcd_device_major), MINOR((dev_t)0));	
 	lcd_hd44780->lcd_cdev = cdev_alloc();
 	lcd_hd44780->lcd_cdev->ops = &lcdwritemessage_fops;
 	lcd_hd44780->lcd_cdev->owner = THIS_MODULE;
