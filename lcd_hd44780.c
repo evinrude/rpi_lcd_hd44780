@@ -68,13 +68,13 @@ static void lcd_write_message(char *message);
 void _lcd_init(void);
 int _lcd_setup(void);
 int _cdev_setup(void);
-int _lcdh_setup(void);
+int _lcdh_t_setup(void);
 int reboot_notify(struct notifier_block *nb, unsigned long action, void *data);
 static int __init mod_init(void);
 static void __exit mod_exit(void);
 
 /** main data structure **/
-struct lcdh {
+struct lcdh_t {
 	struct cdev *lcd_cdev;							/** character device  **/
 	struct dentry *root_entry;						/** debugfs root entry **/
 	unsigned long gpio_base;						/** virtual address to the io mapped memory at GPIO_START **/
@@ -88,7 +88,7 @@ struct lcdh {
 
 /** globals **/
 static int debug = 0;
-static struct lcdh *lcd_hd44780;
+static struct lcdh_t *lcd_hd44780;
 static struct file_operations lcdwritemessage_fops = {
 	.owner = THIS_MODULE,
 	.write = fops_lcdwritemessage,
@@ -436,14 +436,14 @@ int _cdev_setup(void)
 	return 0;
 }
 
-int _lcdh_setup(void)
+int _lcdh_t_setup(void)
 {
 	LOGGER_DEBUG("Innvocation\n");	
 
-	lcd_hd44780 = kmalloc(sizeof(struct lcdh), GFP_KERNEL);
+	lcd_hd44780 = kmalloc(sizeof(struct lcdh_t), GFP_KERNEL);
 	if(!lcd_hd44780)
 	{
-		LOGGER_ERR("Failed to kmalloc lcdh\n");
+		LOGGER_ERR("Failed to kmalloc lcdh_t\n");
 		return -1;
 	}
 
@@ -474,7 +474,7 @@ static int __init mod_init(void)
 
 	//main data structure setup
 	LOGGER_DEBUG("Setting up the main data structure\n");
-	if(_lcdh_setup() != 0) return -1;
+	if(_lcdh_t_setup() != 0) return -1;
 
 	//cdev setup
 	LOGGER_DEBUG("Setting up cdev\n");
