@@ -10,6 +10,7 @@
 #include <linux/cdev.h>
 #include <linux/reboot.h>
 #include <linux/slab.h>
+#include <linux/time.h>
 
 /** about this module **/
 #define MOD_VERSION "v1.1 Baby Sasquatch"
@@ -17,6 +18,8 @@
 
 /** convenience macros **/
 #define MAXBUF 83
+#define TMBUF 9
+#define DTBUF 11
 #define NUM_PORTS 14
 #define GPIO_START 0x20200000
 #define GPFSEL0_OFFSET 0x00000000
@@ -54,6 +57,24 @@ iowrite32(((IOREAD32(GPFSEL1_OFFSET) & ~(7 << ((GPIO % 10) * 3))) | (1 << ((GPIO
 #define LOGGER_WARN(fmt, args ...) printk( KERN_ERR "%s: [warn]  %s(%d): " fmt, MOD_NAME, __FUNCTION__, __LINE__, ## args)
 #define LOGGER_DEBUG(fmt, args ...) if (debug == 1) { printk( KERN_DEBUG "%s: [debug]  %s(%d): " fmt, MOD_NAME, __FUNCTION__, __LINE__, ## args); }
 
+/** gmt data structure **/
+struct gmt {
+	char date_s[DTBUF];
+	char time_s[TMBUF];
+};
+
+/** main data structure **/
+struct lcdh {
+	struct cdev *lcd_cdev;							/** character device  **/
+	struct dentry *root_entry;						/** debugfs root entry **/
+	unsigned long gpio_base;						/** virtual address to the io mapped memory at GPIO_START **/
+	dev_t lcd_device_major;							/** dynamic major number **/
+	dev_t lcd_device_number;						/** major and minor numbers combined **/
+	char lcdbuffer[MAXBUF];							/** lcd message buffer **/
+	u32 clear_before_write_message;					/** used as a boolean to indicate a clear before write **/
+	u8 newline_seperator;							/** newline seperator **/
+	struct semaphore sem;							/** semaphore used to guarantee atomic message writing to the lcd **/
+};
 
 /** prototypes **/
 static ssize_t fops_lcdclear(struct inode *inodep, struct file *filep);
@@ -68,11 +89,17 @@ static void lcd_write_message(char *message);
 void _lcd_init(void);
 int _lcd_setup(void);
 int _cdev_setup(void);
+<<<<<<< HEAD
 int _lcdh_t_setup(void);
+=======
+int _lcdh_setup(void);
+static void get_gmt(struct gmt *gmt);
+>>>>>>> development
 int reboot_notify(struct notifier_block *nb, unsigned long action, void *data);
 static int __init mod_init(void);
 static void __exit mod_exit(void);
 
+<<<<<<< HEAD
 /** main data structure **/
 struct lcdh_t {
 	struct cdev *lcd_cdev;							/** character device  **/
@@ -86,6 +113,8 @@ struct lcdh_t {
 	struct semaphore sem;							/** semaphore used to guarantee atomic message writing to the lcd **/
 };
 
+=======
+>>>>>>> development
 /** globals **/
 static int debug = 0;
 static struct lcdh_t *lcd_hd44780;
@@ -218,7 +247,7 @@ void _lcd_write(unsigned char c, int is_command)
 
 static void lcd_clear(void)
 {
-	LOGGER_DEBUG("Innvocation\n");
+	LOGGER_DEBUG("Invocation\n");
 	_lcd_write(0x01, 1);
 	msleep(20);
 }
@@ -229,7 +258,7 @@ static void lcd_write_message(char *message)
 	int i = 0;
 	int lines = 0;	
 	
-	LOGGER_DEBUG("Innvocation with message [%s]\n", message);
+	LOGGER_DEBUG("Invocation with message [%s]\n", message);
 	
 	//grab
 	LOGGER_DEBUG("Attempting to down the semaphore\n");
@@ -288,7 +317,7 @@ EXPORT_SYMBOL(lcd_write_message);
 
 void _lcd_init(void)
 {
-	LOGGER_DEBUG("Innvocation\n");
+	LOGGER_DEBUG("Invocation\n");
 
 	//delay
 	msleep(250);
@@ -341,7 +370,7 @@ void _lcd_init(void)
 
 int _lcd_setup(void)
 {
-	LOGGER_DEBUG("Innvocation\n");
+	LOGGER_DEBUG("Invocation\n");
 
 	//debugfs dir
 	if((lcd_hd44780->root_entry = debugfs_create_dir("hd44780-lcd", 0)) == 0)
@@ -438,7 +467,7 @@ int _cdev_setup(void)
 
 int _lcdh_t_setup(void)
 {
-	LOGGER_DEBUG("Innvocation\n");	
+	LOGGER_DEBUG("Invocation\n");	
 
 	lcd_hd44780 = kmalloc(sizeof(struct lcdh_t), GFP_KERNEL);
 	if(!lcd_hd44780)
@@ -453,15 +482,49 @@ int _lcdh_t_setup(void)
 	return 0;
 }
 
+static void get_gmt(struct gmt *gmt)
+{
+	struct tm tm;
+	struct timeval tv;
+
+	LOGGER_DEBUG("Invocation\n");
+
+	//get the time in GMT
+	do_gettimeofday(&tv);
+	time_to_tm(tv.tv_sec, 0, &tm);
+
+	//create the date string
+	sprintf(gmt->date_s,"%lu-%02d-%02d",
+			(tm.tm_year + 1900),
+			(tm.tm_mon + 1),
+			tm.tm_mday);
+
+	//create the time string
+	sprintf(gmt->time_s,"%02d:%02d:%02d",
+			tm.tm_hour,
+			tm.tm_min,
+			tm.tm_sec);
+}
+EXPORT_SYMBOL(get_gmt);
+
 int reboot_notify(struct notifier_block *nb, unsigned long action, void *data)
 {
+	char buf[MAXBUF];
+	struct gmt t;
+	
 	LOGGER_DEBUG("Reboot notifier invoked with action [%lu] data [%p]\n", action, data);
+	
+	//get the date and time in GMT
+	get_gmt(&t);
+	
+	//create a nice reboot message
+	sprintf(buf,"  Powering Down!!++  %s+  %s GMT", t.date_s, t.time_s);
 
 	//clear the screen
 	lcd_clear();
 
-	//write that we are entering a power down state
-	lcd_write_message("+  Powering down");
+	//display the message
+	lcd_write_message(buf);
 
 	return NOTIFY_DONE;
 }
