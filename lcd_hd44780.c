@@ -16,7 +16,7 @@
 #define MOD_VERSION "v1.1 Baby Sasquatch"
 #define MOD_NAME "lcd_hd44780"
 
-/** convenience macros **/
+/** macros **/
 #define MAXBUF 83
 #define TMBUF 9
 #define DTBUF 11
