@@ -356,48 +356,48 @@ int _lcd_setup(void)
 	if((lcd_hd44780->root_entry = debugfs_create_dir("hd44780-lcd", 0)) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs root directory\n");
-		return -1;
+		return -ENODEV;
 	}
 
 	//debugfs bool entry
 	if(debugfs_create_bool("clear_before_write_message", 0660, lcd_hd44780->root_entry, &lcd_hd44780->clear_before_write_message) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs bool\n");
-		return -1;
+		return -ENODEV;
 	}
 
 	//debugfs newline seperator
 	if(debugfs_create_u8("newline_seperator", 0660, lcd_hd44780->root_entry, &lcd_hd44780->newline_seperator) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs u8 newline entry\n");
-		return -1;
+		return -ENODEV;
 	}
 	
 	//debugfs clear lcd
 	if(debugfs_create_file("clear", 0000, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdclear_fops) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs file to clear lcd\n");
-		return -1;
+		return -ENODEV;
 	}
 
 	//debugfs send char
 	if(debugfs_create_file("write_char", 0220, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdwritechar_fops) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs file to write char to lcd\n");
-		return -1;
+		return -ENODEV;
 	}
 
 	//debugfs send command
 	if(debugfs_create_file("write_command", 0220, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdwritecmd_fops) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs file to write command to lcd\n");
-		return -1;
+		return -ENODEV;
 	}
 	//request the region of io mapped memory
 	if(request_mem_region(GPIO_START, NUM_PORTS, "hd44780-lcd") == NULL)
 	{
 		LOGGER_ERR("Not able to map I/0\n");
-		return -1;
+		return -ENODEV;
 	}
 
 	//get the virtual address to the io mapped memory
@@ -419,13 +419,15 @@ int _lcd_setup(void)
 
 int _cdev_setup(void)
 {
+	int error = 0;
+
 	LOGGER_DEBUG("Setting up the lcd module\n");
 	
 	//Dynamically assign major number
-	if(alloc_chrdev_region(&lcd_hd44780->lcd_device_major, 0, 1, CHAR_DEVICE_NAME) != 0)
+	if((error = alloc_chrdev_region(&lcd_hd44780->lcd_device_major, 0, 1, CHAR_DEVICE_NAME)) != 0)
 	{
 		LOGGER_ERR("Dynamic character device creation failed");
-		return -1;
+		return error;
 	}
 
 	//setup cdev
@@ -437,7 +439,7 @@ int _cdev_setup(void)
 	if(cdev_add(lcd_hd44780->lcd_cdev, lcd_hd44780->lcd_device_number, 1))
 	{
 		LOGGER_ERR("Failed to add character device for lcd\n");
-		return -1;
+		return -ENODEV;
 	}
 	
 	LOGGER_DEBUG("LCD Major [%d] MINOR [%d]\n", MAJOR(lcd_hd44780->lcd_device_number), MINOR(lcd_hd44780->lcd_device_number));		
@@ -449,11 +451,10 @@ int _lcdh_setup(void)
 {
 	LOGGER_DEBUG("Invocation\n");	
 
-	lcd_hd44780 = kmalloc(sizeof(struct lcdh), GFP_KERNEL);
-	if(!lcd_hd44780)
+	if((lcd_hd44780 = kmalloc(sizeof(struct lcdh), GFP_KERNEL)) == 0)
 	{
 		LOGGER_ERR("Failed to kmalloc lcdh_t\n");
-		return -1;
+		return -ENOMEM;
 	}
 
 	lcd_hd44780->clear_before_write_message = 0;
@@ -511,21 +512,22 @@ int reboot_notify(struct notifier_block *nb, unsigned long action, void *data)
 
 static int __init mod_init(void)
 {
-	char buf[MAXBUF];	
+	char buf[MAXBUF];
+	int error = 0;	
 
 	LOGGER_INFO("%s\n", MOD_VERSION);
 
 	//main data structure setup
 	LOGGER_DEBUG("Setting up the main data structure\n");
-	if(_lcdh_setup() != 0) return -1;
+	if((error = _lcdh_setup()) != 0) return error;
 
 	//cdev setup
 	LOGGER_DEBUG("Setting up cdev\n");
-	if(_cdev_setup() != 0) return -1;
+	if((error = _cdev_setup()) != 0) return error;
 
 	//lcd setup
 	LOGGER_DEBUG("Setting up lcd\n");
-	if(_lcd_setup() != 0) return -1;
+	if((error = _lcd_setup() != 0)) return error;
 	
 	//initialize the lcd
 	LOGGER_DEBUG("Initializing the lcd\n");
