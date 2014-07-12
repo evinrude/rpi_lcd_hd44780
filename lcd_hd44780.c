@@ -78,9 +78,11 @@ struct lcdh {
 
 /** prototypes **/
 static ssize_t fops_lcdclear(struct inode *inodep, struct file *filep);
+static ssize_t fops_lcdinit(struct inode *inodep, struct file *filep);
 static ssize_t fops_lcdwritemessage(struct file *filep, const char __user *buff, size_t len, loff_t *off);
 static ssize_t fops_lcdwritechar(struct file *filep, const char __user *buff, size_t len, loff_t *off);
 static ssize_t fops_lcdwritecmd(struct file *filep, const char __user *buff, size_t len, loff_t *off);
+void _zero_data_lines(void);
 void _toggle_en(void);
 void _write_nibble(unsigned char nibble);
 void _lcd_write(unsigned char c, int is_command);
@@ -106,6 +108,10 @@ static struct file_operations lcdclear_fops = {
 	.owner = THIS_MODULE,
 	.open = fops_lcdclear,
 };
+static struct file_operations lcdinit_fops = {
+	.owner = THIS_MODULE,
+	.open = fops_lcdinit,
+};
 static struct file_operations lcdwritechar_fops = {
 	.owner = THIS_MODULE,
 	.write = fops_lcdwritechar,
@@ -124,14 +130,22 @@ MODULE_PARM_DESC(debug, "Set the log level to debug");
 
 static int fops_lcdclear(struct inode *inodep, struct file *filep)
 {
-	LOGGER_DEBUG("Received innvocation from user space\n");
+	LOGGER_DEBUG("Received invocation from user space\n");
 	lcd_clear();
+	return 0;
+}
+
+static int fops_lcdinit(struct inode *inodep, struct file *filep)
+{
+	LOGGER_DEBUG("Received invocation from user space\n");
+    _zero_data_lines();
+	_lcd_init();
 	return 0;
 }
 
 static ssize_t fops_lcdwritemessage(struct file *filp, const char __user *buff, size_t len, loff_t *off)
 {
-	LOGGER_DEBUG("Received innvocation from user space\n");
+	LOGGER_DEBUG("Received invocation from user space\n");
 	if(len > MAXBUF)
 	{
 		LOGGER_ERR("Unsupported string size [%d]. Must be less than [%d]\n", len, MAXBUF);
@@ -155,7 +169,7 @@ static ssize_t fops_lcdwritemessage(struct file *filp, const char __user *buff, 
 
 static ssize_t fops_lcdwritechar(struct file *filep, const char __user *buff, size_t len, loff_t *off)
 {
-	LOGGER_DEBUG("Received innvocation from user space\n");
+	LOGGER_DEBUG("Received invocation from user space\n");
 
 	memset(&lcd_hd44780->lcdbuffer, 0, 1);
 	if(copy_from_user(lcd_hd44780->lcdbuffer, buff, len))
@@ -172,7 +186,7 @@ static ssize_t fops_lcdwritechar(struct file *filep, const char __user *buff, si
 
 static ssize_t fops_lcdwritecmd(struct file *filep, const char __user *buff, size_t len, loff_t *off)
 {
-	LOGGER_DEBUG("Received innvocation from user space\n");
+	LOGGER_DEBUG("Received invocation from user space\n");
 
 	memset(&lcd_hd44780->lcdbuffer, 0, 1);
 	if(copy_from_user(lcd_hd44780->lcdbuffer, buff, len))
@@ -185,6 +199,14 @@ static ssize_t fops_lcdwritecmd(struct file *filep, const char __user *buff, siz
 
 	_lcd_write(lcd_hd44780->lcdbuffer[0], 1);
 	return len;
+}
+
+void _zero_data_lines(void)
+{
+	GPIO_OFF(DB4);
+    GPIO_OFF(DB5);
+    GPIO_OFF(DB6);
+    GPIO_OFF(DB7);
 }
 
 void _toggle_en(void)
@@ -359,12 +381,19 @@ int _lcd_setup(void)
 		return -ENODEV;
 	}
 
-	//debugfs bool entry
+	//debugfs bool entry for clearing the display befory every message write
 	if(debugfs_create_bool("clear_before_write_message", 0660, lcd_hd44780->root_entry, &lcd_hd44780->clear_before_write_message) == 0)
 	{
-		LOGGER_ERR("Unable to create debugfs bool\n");
+		LOGGER_ERR("Unable to create debugfs clear_before_write_message\n");
 		return -ENODEV;
 	}
+
+	//debugfs bool entry for turning debug on and off
+	if(debugfs_create_bool("debug", 0660, lcd_hd44780->root_entry, &debug) == 0)
+	{
+		LOGGER_ERR("Unable to create debugfs debug\n");
+		return -ENODEV;
+	}	
 
 	//debugfs newline seperator
 	if(debugfs_create_u8("newline_seperator", 0660, lcd_hd44780->root_entry, &lcd_hd44780->newline_seperator) == 0)
@@ -377,6 +406,13 @@ int _lcd_setup(void)
 	if(debugfs_create_file("clear", 0000, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdclear_fops) == 0)
 	{
 		LOGGER_ERR("Unable to create debugfs file to clear lcd\n");
+		return -ENODEV;
+	}
+	
+	//debugfs init lcd
+	if(debugfs_create_file("init", 0000, lcd_hd44780->root_entry, &lcd_hd44780->lcdbuffer, &lcdinit_fops) == 0)
+	{
+		LOGGER_ERR("Unable to create debugfs file to initialize lcd\n");
 		return -ENODEV;
 	}
 
